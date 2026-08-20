@@ -8,6 +8,24 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+import json
+import os
+from google.cloud import documentai_v1 as documentai
+from google.oauth2 import service_account
+
+# 1. 環境変数やStreamlit secretsからJSON文字列を取得
+# （例: 環境変数 GCP_CREDENTIALS_JSON にJSON全文を文字列として登録しておく）
+service_account_info = json.loads(os.environ["GCP_CREDENTIALS_JSON"])
+
+# 2. 辞書データから認証オブジェクトを作成
+credentials = service_account.Credentials.from_service_account_info(
+    service_account_info
+)
+
+# 3. クライアント作成時に credentials を渡す
+client = documentai.DocumentProcessorServiceClient(
+    credentials=credentials, client_options=client_options
+)
 # =====================================================================
 # 1. Document AI でPDFをOCR処理
 # =====================================================================

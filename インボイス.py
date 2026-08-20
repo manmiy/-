@@ -13,6 +13,43 @@ import os
 from google.cloud import documentai_v1 as documentai
 from google.oauth2 import service_account
 
+import streamlit as st
+
+def check_password():
+    """パスワード認証を行い、認証成功時のみ True を返す"""
+    def password_entered():
+        # st.secrets から取得（未設定の場合は初期値として 'sto0123' を使用）
+        correct_password = st.secrets.get("APP_PASSWORD", "password")
+        
+        if st.session_state["password_input"] == correct_password:
+            st.session_state["password_correct"] = True
+            del st.session_state["password_input"]  # セッション内のパスワード文字列を消去
+        else:
+            st.session_state["password_correct"] = False
+
+    # すでに認証済みの場合は True を返す
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # 認証フォームの表示
+    st.text_input(
+        "パスワードを入力してください",
+        type="password",
+        on_change=password_entered,
+        key="password_input"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("パスワードが違います")
+        
+    return False
+
+# --- メイン処理の実行制御 ---
+if check_password():
+    st.title("インボイスOCR処理システム")
+    st.write("認証に成功しました。ここにOCRの処理ロジックを配置します。")
+    # ここに既存の Document AI などのコードを記述
+
 # 1. 環境変数やStreamlit secretsからJSON文字列を取得
 # （例: 環境変数 GCP_CREDENTIALS_JSON にJSON全文を文字列として登録しておく）
 service_account_info = json.loads(os.environ["GCP_CREDENTIALS_JSON"])

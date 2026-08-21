@@ -6,8 +6,9 @@ from google import genai
 from google.genai import types
 from google.oauth2 import service_account
 
-# --- 簡易認証 ---
+# --- 1. パスワード認証機能 ---
 def check_password():
+    """パスワード認証を行い、認証成功時のみ True を返す"""
     def password_entered():
         correct_password = st.secrets.get("APP_PASSWORD", "sto0123")
         if st.session_state["password_input"] == correct_password:
@@ -19,12 +20,17 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    st.text_input("パスワードを入力してください", type="password", on_change=password_entered, key="password_input")
+    st.text_input(
+        "パスワードを入力してください",
+        type="password",
+        on_change=password_entered,
+        key="password_input"
+    )
     if "password_correct" in st.session_state and not st.session_state["password_correct"]:
         st.error("パスワードが違います")
     return False
 
-# --- メイン処理 ---
+# --- 2. メイン処理 ---
 if check_password():
     st.title("請求書 単価推移・比較表作成 (Vertex AI)")
     st.write("GCP Vertex AI（エンタープライズ環境）で請求書PDFを解析し、月別単価推移表を生成します。")
@@ -39,21 +45,24 @@ if check_password():
         if "gcp_service_account" not in st.secrets:
             st.error("Secrets に [gcp_service_account] が設定されていません。")
         else:
-            with st.spinner("Vertex AI (Gemini 2.5) でPDF解析および名寄せ集計中..."):
+            with st.spinner("Vertex AI でPDF解析および名寄せ集計中..."):
                 try:
-                    # 1. サービスアカウント認証オブジェクトの作成
+                    # サービスアカウント認証オブジェクトの作成（OAuthスコープを明示）
                     creds_dict = dict(st.secrets["gcp_service_account"])
-                    credentials = service_account.Credentials.from_service_account_info(creds_dict)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        creds_dict,
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                    )
 
-                    # 2. Vertex AI 用の GenAI クライアント初期化
+                    # Vertex AI 用の GenAI クライアント初期化
                     client = genai.Client(
                         vertexai=True,
-                        project=creds_dict["project_id"],
+                        project=creds_dict.get("project_id"),
                         location=st.secrets.get("GCP_LOCATION", "us-central1"),
                         credentials=credentials
                     )
 
-                    # 3. アップロードされたPDFを並列データとしてセット
+                    # アップロードされたPDFを並列データとしてセット
                     pdf_parts = []
                     for file in uploaded_files:
                         pdf_parts.append(
@@ -63,7 +72,7 @@ if check_password():
                             )
                         )
 
-                    # 4. 解析指示プロンプト
+                    # 解析指示プロンプト
                     prompt = """
                     提供されたすべての請求書PDF（複数月分）を解析し、品目ごとの単価推移表（比較表）を作成してください。
 
@@ -89,7 +98,7 @@ if check_password():
                     ]
                     """
 
-                    # 5. Vertex AI モデル呼び出し
+                    # Vertex AI モデル呼び出し
                     response = client.models.generate_content(
                         model="gemini-2.5-flash",
                         contents=[*pdf_parts, prompt],
@@ -98,14 +107,14 @@ if check_password():
                         )
                     )
 
-                    # 6. 結果表示とデータフレーム化
+                    # 結果表示とデータフレーム化
                     data = json.loads(response.text)
                     df = pd.DataFrame(data)
 
                     st.success("解析および単価比較表の生成が完了しました。")
                     st.dataframe(df)
 
-                    # 7. Excelダウンロード
+                    # Excelダウンロード機能
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine="openpyxl") as writer:
                         df.to_excel(writer, index=False, sheet_name="単価推移比較表")

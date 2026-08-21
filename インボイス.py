@@ -1,96 +1,61 @@
-import argparse
+import json
 import re
-import sys
 from pathlib import Path
 
+import streamlit as st
 from google.cloud import documentai_v1 as documentai
+from google.oauth2 import service_account
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-import json
-import os
-from google.cloud import documentai_v1 as documentai
-from google.oauth2 import service_account
-
-import streamlit as st
-
+# =====================================================================
+# 1. パスワード認証機能
+# =====================================================================
 def check_password():
     """パスワード認証を行い、認証成功時のみ True を返す"""
     def password_entered():
-        # st.secrets から取得（未設定の場合は初期値として 'sto0123' を使用）
         correct_password = st.secrets.get("APP_PASSWORD", "password")
-        
         if st.session_state["password_input"] == correct_password:
             st.session_state["password_correct"] = True
-            del st.session_state["password_input"]  # セッション内のパスワード文字列を消去
+            del st.session_state["password_input"]
         else:
             st.session_state["password_correct"] = False
 
-    # すでに認証済みの場合は True を返す
     if st.session_state.get("password_correct", False):
         return True
 
-    # 認証フォームの表示
     st.text_input(
         "パスワードを入力してください",
         type="password",
         on_change=password_entered,
         key="password_input"
     )
-    
     if "password_correct" in st.session_state and not st.session_state["password_correct"]:
         st.error("パスワードが違います")
-        
     return False
 
-# --- メイン処理の実行制御 ---
-if check_password():
-    st.title("インボイスOCR処理システム")
-    st.write("認証に成功しました。ここにOCRの処理ロジックを配置します。")
-    # ここに既存の Document AI などのコードを記述
-
-# 1. 環境変数やStreamlit secretsからJSON文字列を取得
-# （例: 環境変数 GCP_CREDENTIALS_JSON にJSON全文を文字列として登録しておく）
-service_account_info = json.loads(os.environ["GCP_CREDENTIALS_JSON"])
-
-# 2. 辞書データから認証オブジェクトを作成
-credentials = service_account.Credentials.from_service_account_info(
-    service_account_info
-)
-
-# 3. クライアント作成時に credentials を渡す
-client = documentai.DocumentProcessorServiceClient(
-    credentials=credentials, client_options=client_options
-)
 # =====================================================================
-# 1. Document AI でPDFをOCR処理
+# 2. Document AI 処理
 # =====================================================================
-
-
-def ocr_pdf_with_documentai(pdf_path: str, project_id: str, location: str, processor_id: str):
-    """PDFをDocument AIに送信し、認識結果(Documentオブジェクト)を返す"""
+def ocr_pdf_with_documentai(pdf_bytes: bytes, project_id: str, location: str, processor_id: str, credentials):
+    """PDFバイトデータをDocument AIに送信し、認識結果を返す"""
     client_options = {"api_endpoint": f"{location}-documentai.googleapis.com"}
-    client = documentai.DocumentProcessorServiceClient(client_options=client_options)
+    client = documentai.DocumentProcessorServiceClient(
+        credentials=credentials, 
+        client_options=client_options
+    )
 
     processor_name = client.processor_path(project_id, location, processor_id)
-
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-
     raw_document = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
     request = documentai.ProcessRequest(name=processor_name, raw_document=raw_document)
 
-    print("  -> Document AI にリクエスト送信中...")
     result = client.process_document(request=request)
     return result.document
 
-
 # =====================================================================
-# 2. OCRテキストから明細行を正規表現でパース
+# 3. テキストパース (正規表現)
 # =====================================================================
-
-# 1件目の明細行: "04 08 065755 ＪＳＰ MKS30 ミラフォーム３０ｍｍ３種３Ｘ６ 5 枚 1260 6300"
 ITEM_PATTERN = re.compile(
     r"^(?P<month>\d{2})\s+(?P<day>\d{2})\s+(?P<denpyo>\d{6})\s+"
     r"(?P<maker>\S+)\s+(?P<hinban>\S+)\s+(?P<hinmei>.+?)\s+"
@@ -99,7 +64,6 @@ ITEM_PATTERN = re.compile(
     r"(?:\s+(?P<note>.+))?$"
 )
 
-# 同じ伝票の2行目以降 (発行日・伝票Noが空欄で始まる行)
 ITEM_PATTERN_CONT = re.compile(
     r"^(?P<maker>\S+)\s+(?P<hinban>\S+)\s+(?P<hinmei>.+?)\s+"
     r"(?P<qty>-?\d+)\s+(?P<unit>\S+)\s+(?P<price>-?\d+)\s+(?P<amount>-?\d+)"
@@ -111,114 +75,74 @@ DENPYO_TOTAL_PATTERN = re.compile(r"^伝票合計\s+(?P<amount>-?\d+)\s*(?:\((?P
 KENMEI_TOTAL_PATTERN = re.compile(r"^件名合計\s+(?P<amount>-?\d+)\s*(?:\((?P<order_no>\d+)\))?\s*(?P<note>.+)?$")
 TOKUISAKI_TOTAL_PATTERN = re.compile(r"^得意先合計\s+(?P<amount>-?\d+)\s*(?P<note>.+)?$")
 
+def _item_row(date: str, denpyo: str, d: dict) -> dict:
+    return {
+        "発行日": date, "伝票No": denpyo, "メーカ": d["maker"], "品番": d["hinban"],
+        "品名": d["hinmei"], "数量": int(d["qty"]), "単位": d["unit"], "単価": int(d["price"]),
+        "金額": int(d["amount"]), "注文No": d.get("order_no") or "", "備考": d.get("note") or "", "行種別": "明細"
+    }
+
+def _total_row(date: str, denpyo: str, label: str, d: dict) -> dict:
+    return {
+        "発行日": date, "伝票No": denpyo, "メーカ": "", "品番": "", "品名": label,
+        "数量": "", "単位": "", "単価": "", "金額": int(d["amount"]),
+        "注文No": d.get("order_no") or "", "備考": d.get("note") or "", "行種別": label
+    }
 
 def parse_lines(ocr_text: str) -> list[dict]:
-    """OCRで得たテキスト(改行区切り)から明細行のリストを作る"""
     rows: list[dict] = []
-    current_denpyo = ""
-    current_date = ""
+    current_denpyo, current_date = "", ""
 
     for raw_line in ocr_text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
 
-        # --- 明細行(発行日つき) -----------------------------------
         m = ITEM_PATTERN.match(line)
         if m:
             d = m.groupdict()
-            current_date = f"{d['month']}/{d['day']}"
-            current_denpyo = d["denpyo"]
+            current_date, current_denpyo = f"{d['month']}/{d['day']}", d["denpyo"]
             rows.append(_item_row(current_date, current_denpyo, d))
             continue
 
-        # --- 伝票合計行 --------------------------------------------
         m = DENPYO_TOTAL_PATTERN.match(line)
         if m:
-            d = m.groupdict()
-            rows.append(_total_row(current_date, current_denpyo, "伝票合計", d))
+            rows.append(_total_row(current_date, current_denpyo, "伝票合計", m.groupdict()))
             continue
 
-        # --- 件名合計行 --------------------------------------------
         m = KENMEI_TOTAL_PATTERN.match(line)
         if m:
-            d = m.groupdict()
-            rows.append(_total_row("", "", "件名合計", d))
+            rows.append(_total_row("", "", "件名合計", m.groupdict()))
             continue
 
-        # --- 得意先合計行 ------------------------------------------
         m = TOKUISAKI_TOTAL_PATTERN.match(line)
         if m:
-            d = m.groupdict()
-            rows.append(_total_row("", "", "得意先合計", d))
+            rows.append(_total_row("", "", "得意先合計", m.groupdict()))
             continue
 
-        # --- 明細行(発行日なし、同伝票の2行目以降) -------------------
         m = ITEM_PATTERN_CONT.match(line)
         if m:
-            d = m.groupdict()
-            rows.append(_item_row(current_date, current_denpyo, d))
+            rows.append(_item_row(current_date, current_denpyo, m.groupdict()))
             continue
-
-        # どのパターンにも一致しない行は無視(見出し・空白行など)
 
     return rows
 
-
-def _item_row(date: str, denpyo: str, d: dict) -> dict:
-    return {
-        "発行日": date,
-        "伝票No": denpyo,
-        "メーカ": d["maker"],
-        "品番": d["hinban"],
-        "品名": d["hinmei"],
-        "数量": int(d["qty"]),
-        "単位": d["unit"],
-        "単価": int(d["price"]),
-        "金額": int(d["amount"]),
-        "注文No": d.get("order_no") or "",
-        "備考": d.get("note") or "",
-        "行種別": "明細",
-    }
-
-
-def _total_row(date: str, denpyo: str, label: str, d: dict) -> dict:
-    return {
-        "発行日": date,
-        "伝票No": denpyo,
-        "メーカ": "",
-        "品番": "",
-        "品名": label,
-        "数量": "",
-        "単位": "",
-        "単価": "",
-        "金額": int(d["amount"]),
-        "注文No": d.get("order_no") or "",
-        "備考": d.get("note") or "",
-        "行種別": label,
-    }
-
-
 # =====================================================================
-# 3. Excel へ書き出し
+# 4. Excel 生成処理
 # =====================================================================
-
 HEADERS = ["発行日", "伝票No", "メーカ", "品番", "品名", "数量", "単位", "単価", "金額", "注文No", "備考"]
-COL_WIDTHS = {"発行日": 8, "伝票No": 10, "メーカ": 16, "品番": 14, "品名": 34,
-              "数量": 8, "単位": 6, "単価": 10, "金額": 12, "注文No": 10, "備考": 22}
-
+COL_WIDTHS = {"発行日": 8, "伝票No": 10, "メーカ": 16, "品番": 14, "品名": 34, "数量": 8, "単位": 6, "単価": 10, "金額": 12, "注文No": 10, "備考": 22}
 HEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 TOTAL_FILL = PatternFill("solid", fgColor="FCE4D6")
 THIN = Side(style="thin", color="AAAAAA")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-
-def write_excel(rows: list[dict], output_path: str, sheet_title: str = "4月分請求内訳") -> None:
+def create_excel_bytes(rows: list[dict], sheet_title: str = "4月分請求内訳") -> bytes:
+    import io
     wb = Workbook()
     ws = wb.active
-    ws.title = sheet_title[:31]  # シート名は31文字まで
+    ws.title = sheet_title[:31]
 
-    # --- ヘッダー行 ---
     for col_idx, header in enumerate(HEADERS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = Font(name="Arial", bold=True)
@@ -227,10 +151,9 @@ def write_excel(rows: list[dict], output_path: str, sheet_title: str = "4月分�
         cell.border = BORDER
 
     amount_col = HEADERS.index("金額") + 1
-    first_data_row = 2
     detail_rows_for_sum = []
 
-    row_idx = first_data_row
+    row_idx = 2
     for row in rows:
         for col_idx, header in enumerate(HEADERS, start=1):
             value = row.get(header, "")
@@ -246,65 +169,73 @@ def write_excel(rows: list[dict], output_path: str, sheet_title: str = "4月分�
             detail_rows_for_sum.append(row_idx)
         row_idx += 1
 
-    # --- 総合計行(明細行のみをSUM式で合計。ハードコードしない) ---
     total_row_idx = row_idx + 1
-    ws.cell(row=total_row_idx, column=HEADERS.index("品名") + 1, value="総合計(明細のみ)").font = Font(
-        name="Arial", bold=True
-    )
+    ws.cell(row=total_row_idx, column=HEADERS.index("品名") + 1, value="総合計(明細のみ)").font = Font(name="Arial", bold=True)
     col_letter = get_column_letter(amount_col)
-    if detail_rows_for_sum:
-        refs = ",".join(f"{col_letter}{r}" for r in detail_rows_for_sum)
-        formula = f"=SUM({refs})"
-    else:
-        formula = 0
+    formula = f"=SUM({','.join(f'{col_letter}{r}' for r in detail_rows_for_sum)})" if detail_rows_for_sum else 0
+    
     total_cell = ws.cell(row=total_row_idx, column=amount_col, value=formula)
     total_cell.number_format = "#,##0"
     total_cell.font = Font(name="Arial", bold=True)
     total_cell.fill = TOTAL_FILL
 
-    # --- 列幅 ---
     for col_idx, header in enumerate(HEADERS, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = COL_WIDTHS.get(header, 12)
 
     ws.freeze_panes = "A2"
-    wb.save(output_path)
-    print(f"  -> Excelファイルを保存しました: {output_path}")
-
+    
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
 # =====================================================================
-# 4. メイン処理
+# 5. Streamlit メインUI画面
 # =====================================================================
+if check_password():
+    st.title("インボイスOCR自動転記システム")
 
+    # サイドバーでGCP設定を入力・管理（Secretsがあれば自動補完）
+    st.sidebar.header("Document AI 設定")
+    project_id = st.sidebar.text_input("GCP Project ID", value=st.secrets.get("GCP_PROJECT_ID", ""))
+    location = st.sidebar.text_input("Location", value=st.secrets.get("GCP_LOCATION", "us"))
+    processor_id = st.sidebar.text_input("Processor ID", value=st.secrets.get("GCP_PROCESSOR_ID", ""))
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="請求内訳明細表PDF → Excel 転記 (Google Cloud Document AI使用)"
-    )
-    parser.add_argument("--pdf", required=True, help="OCR対象のPDFファイルパス")
-    parser.add_argument("--project-id", required=True, help="GCPプロジェクトID")
-    parser.add_argument("--location", default="us", help="Document AIプロセッサのロケーション (us / eu 等)")
-    parser.add_argument("--processor-id", required=True, help="Document AIプロセッサID")
-    parser.add_argument("--output", default="請求内訳.xlsx", help="出力するExcelファイル名")
-    args = parser.parse_args()
+    uploaded_file = st.file_uploader("処理する請求書PDFを選択してください", type=["pdf"])
 
-    pdf_path = Path(args.pdf)
-    if not pdf_path.exists():
-        sys.exit(f"PDFファイルが見つかりません: {pdf_path}")
+    if uploaded_file is not None:
+        if st.button("OCR処理を開始"):
+            if not project_id or not processor_id:
+                st.error("サイドバーで Project ID と Processor ID を設定してください。")
+            elif "GCP_CREDENTIALS_JSON" not in st.secrets:
+                st.error("Streamlit Secrets に 'GCP_CREDENTIALS_JSON' が設定されていません。")
+            else:
+                with st.spinner("Document AI で解析中..."):
+                    try:
+                        # 認証情報の読み込み
+                        service_account_info = json.loads(st.secrets["GCP_CREDENTIALS_JSON"])
+                        credentials = service_account.Credentials.from_service_account_info(service_account_info)
 
-    print("[1/3] Document AI でOCR処理中...")
-    document = ocr_pdf_with_documentai(str(pdf_path), args.project_id, args.location, args.processor_id)
+                        # OCR実行
+                        pdf_bytes = uploaded_file.read()
+                        doc = ocr_pdf_with_documentai(pdf_bytes, project_id, location, processor_id, credentials)
 
-    print("[2/3] 明細行を抽出中...")
-    rows = parse_lines(document.text)
-    print(f"  -> {len(rows)} 行を抽出しました")
-    if not rows:
-        print("  !! 1行も抽出できませんでした。OCR結果のテキストを確認し、")
-        print("     正規表現(ITEM_PATTERN等)を実際のレイアウトに合わせて調整してください。")
-        print("     デバッグ用にOCR全文を確認したい場合は、document.text を print してください。")
+                        # パース処理
+                        rows = parse_lines(doc.text)
+                        st.success(f"解析完了: {len(rows)} 行の明細を抽出しました。")
 
-    print("[3/3] Excelに書き出し中...")
-    write_excel(rows, args.output)
+                        if rows:
+                            # Excelバイナリ生成
+                            excel_bytes = create_excel_bytes(rows)
+                            st.download_button(
+                                label="Excelファイルをダウンロード",
+                                data=excel_bytes,
+                                file_name="請求内訳.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            st.warning("明細行が抽出できませんでした。文字認識結果を確認してください。")
+                            with st.expander("OCR解析テキスト（デバッグ用）"):
+                                st.text(doc.text)
 
-
-if __name__ == "__main__":
-    main()
+                    except Exception as e:
+                        st.error(f"エラーが発生しました: {e}")

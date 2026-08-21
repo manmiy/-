@@ -8,6 +8,7 @@ from google.oauth2 import service_account
 
 # --- 1. パスワード認証機能 ---
 def check_password():
+    """パスワード認証を行い、認証成功時のみ True を返す"""
     def password_entered():
         correct_password = st.secrets.get("APP_PASSWORD", "sto0123")
         if st.session_state["password_input"] == correct_password:
@@ -129,25 +130,28 @@ if check_password():
                     new_data = json.loads(response.text)
                     df_new = pd.DataFrame(new_data)
 
-                    # 7. 既存エクセルとの照合・上書き・追加ロジック
+                    # 7. 既存エクセルとの照合・重複排除・上書き・追加ロジック
                     if not df_existing.empty:
-                        # 照合キーの作成（品名を軸とし、無ければメーカー+品名）
                         merge_key = "品名" if "品名" in df_existing.columns and "品名" in df_new.columns else None
 
                         if merge_key:
-                            # インデックスを照合キーに設定して上書き更新（update）
-                            df_existing_indexed = df_existing.set_index(merge_key)
-                            df_new_indexed = df_new.set_index(merge_key)
+                            # PDF側・既存エクセル側の重複キーをそれぞれ排除（最後に出現したデータを優先）
+                            df_new_clean = df_new.drop_duplicates(subset=[merge_key], keep="last")
+                            df_existing_clean = df_existing.drop_duplicates(subset=[merge_key], keep="last")
 
-                            # 既存にない列（新しい月の単価列など）を既存DFに追加拡張
+                            # インデックス設定
+                            df_existing_indexed = df_existing_clean.set_index(merge_key)
+                            df_new_indexed = df_new_clean.set_index(merge_key)
+
+                            # 既存にない列（新しい月の単価列など）を拡張
                             for col in df_new_indexed.columns:
                                 if col not in df_existing_indexed.columns:
                                     df_existing_indexed[col] = None
 
-                            # 既存データに対し、新しいPDFのデータで上書き（同一品名が存在する場合）
+                            # 上書き更新
                             df_existing_indexed.update(df_new_indexed)
 
-                            # 完全に新しい品名（行）を末尾に追加
+                            # 新規品名（行）を末尾に追加
                             new_rows = df_new_indexed.index.difference(df_existing_indexed.index)
                             if not new_rows.empty:
                                 df_updated = pd.concat([df_existing_indexed, df_new_indexed.loc[new_rows]]).reset_index()
@@ -155,10 +159,8 @@ if check_password():
                                 df_updated = df_existing_indexed.reset_index()
 
                         else:
-                            # キーが見つからない場合は単純結合
                             df_updated = pd.concat([df_existing, df_new], ignore_index=True)
                     else:
-                        # 既存エクセルがない場合はPDFからの新規生成データを使用
                         df_updated = df_new
 
                     # 8. 画面表示とExcel出力

@@ -9,6 +9,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+import streamlit as st
+from google.oauth2 import service_account
+
+# Secretsから辞書として直接読み込み
+creds_dict = dict(st.secrets["gcp_service_account"])
+credentials = service_account.Credentials.from_service_account_info(creds_dict)
+
 # =====================================================================
 # 1. パスワード認証機能
 # =====================================================================

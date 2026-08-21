@@ -8,7 +8,6 @@ from google.oauth2 import service_account
 
 # --- 1. パスワード認証機能 ---
 def check_password():
-    """パスワード認証を行い、認証成功時のみ True を返す"""
     def password_entered():
         correct_password = st.secrets.get("APP_PASSWORD", "sto0123")
         if st.session_state["password_input"] == correct_password:
@@ -32,29 +31,48 @@ def check_password():
 
 # --- 2. メイン処理 ---
 if check_password():
-    st.title("請求書 単価推移・比較表作成 (Vertex AI)")
-    st.write("GCP Vertex AI（エンタープライズ環境）で請求書PDFを解析し、月別単価推移表を生成します。")
+    st.title("請求書 単価推移表 更新システム (Vertex AI)")
+    st.write("既存の単価表エクセルと追加・更新したい請求書PDFを読み込み、データを照合・上書き更新します。")
 
-    uploaded_files = st.file_uploader(
-        "各月の請求書PDFを選択してください（複数可）",
-        type=["pdf"],
-        accept_multiple_files=True
-    )
+    col1, col2 = st.columns(2)
 
-    if uploaded_files and st.button("単価推移表を生成"):
+    with col1:
+        st.subheader("1. 既存の単価表エクセル（任意）")
+        uploaded_excel = st.file_uploader(
+            "更新対象のエクセルファイル (.xlsx) を選択",
+            type=["xlsx"]
+        )
+
+    with col2:
+        st.subheader("2. 追加・更新する請求書PDF（必須）")
+        uploaded_pdfs = st.file_uploader(
+            "追加・解析したいPDFを選択（複数可）",
+            type=["pdf"],
+            accept_multiple_files=True
+        )
+
+    if uploaded_pdfs and st.button("データ照合・更新を実行"):
         if "gcp_service_account" not in st.secrets:
             st.error("Secrets に [gcp_service_account] が設定されていません。")
         else:
-            with st.spinner("Vertex AI でPDF解析および名寄せ集計中..."):
+            with st.spinner("Vertex AIでPDFを解析し、エクセルデータを照合・上書き中..."):
                 try:
-                    # サービスアカウント認証オブジェクトの作成（OAuthスコープを明示）
+                    # 1. 既存エクセルの読み込み
+                    existing_items_str = ""
+                    df_existing = pd.DataFrame()
+                    if uploaded_excel is not None:
+                        df_existing = pd.read_excel(uploaded_excel)
+                        if "品名" in df_existing.columns:
+                            existing_items = df_existing["品名"].dropna().unique().tolist()
+                            existing_items_str = f"\nなお、既存の単価表には以下の品名が存在します。表記ゆれがある場合は極力これらの既存品名に合わせて統一（名寄せ）してください:\n{json.dumps(existing_items, ensure_ascii=False)}"
+
+                    # 2. Vertex AI クライアント初期化
                     creds_dict = dict(st.secrets["gcp_service_account"])
                     credentials = service_account.Credentials.from_service_account_info(
                         creds_dict,
                         scopes=["https://www.googleapis.com/auth/cloud-platform"]
                     )
 
-                    # Vertex AI 用の GenAI クライアント初期化
                     client = genai.Client(
                         vertexai=True,
                         project=creds_dict.get("project_id"),
@@ -62,9 +80,9 @@ if check_password():
                         credentials=credentials
                     )
 
-                    # アップロードされたPDFを並列データとしてセット
+                    # 3. PDFバイナリのパッキング
                     pdf_parts = []
-                    for file in uploaded_files:
+                    for file in uploaded_pdfs:
                         pdf_parts.append(
                             types.Part.from_bytes(
                                 data=file.read(),
@@ -72,20 +90,20 @@ if check_password():
                             )
                         )
 
-                    # 解析指示プロンプト
-                    prompt = """
-                    提供されたすべての請求書PDF（複数月分）を解析し、品目ごとの単価推移表（比較表）を作成してください。
+                    # 4. 解析指示プロンプトの構築
+                    prompt = f"""
+                    提供されたすべての請求書PDFを解析し、品目ごとの単価情報を抽出してください。
+                    {existing_items_str}
 
-                    【抽出・集計条件】
-                    1. 品名、規格・サイズ、メーカー名を抽出してください。
-                    2. 文字認識（OCR）の誤字・表記ゆれ（例: 「ベベル「ボード」と「ベベルボード」など）は同一品目として整理（名寄せ）してください。
-                    3. 対象となる各月（例: 4月、5月、6月、7月）ごとの「単価」を抽出してください。
-                    4. 単価に変更があった場合は「備考」に（例: 「7月に値上げ」）と記載してください。
+                    【抽出・名寄せ条件】
+                    1. メーカー名、品名、サイズ・規格を抽出してください。
+                    2. 各月（例: 4月単価、5月単価、6月単価、7月単価等）の単価を抽出してください。
+                    3. 備考情報（値上げなど）があれば抽出してください。
 
                     【返却フォーマット】
                     以下の構造を持つ JSON 配列オブジェクトのみを出力してください。
                     [
-                      {
+                      {{
                         "メーカー": "吉野石膏",
                         "品名": "ベベルボード",
                         "サイズ": "12.5mm 3x8",
@@ -94,11 +112,11 @@ if check_password():
                         "6月単価": 850,
                         "7月単価": 980,
                         "備考": "7月に値上げ"
-                      }
+                      }}
                     ]
                     """
 
-                    # Vertex AI モデル呼び出し
+                    # 5. Gemini 呼び出し
                     response = client.models.generate_content(
                         model="gemini-2.5-flash",
                         contents=[*pdf_parts, prompt],
@@ -107,24 +125,56 @@ if check_password():
                         )
                     )
 
-                    # 結果表示とデータフレーム化
-                    data = json.loads(response.text)
-                    df = pd.DataFrame(data)
+                    # 6. PDF解析結果のデータフレーム化
+                    new_data = json.loads(response.text)
+                    df_new = pd.DataFrame(new_data)
 
-                    st.success("解析および単価比較表の生成が完了しました。")
-                    st.dataframe(df)
+                    # 7. 既存エクセルとの照合・上書き・追加ロジック
+                    if not df_existing.empty:
+                        # 照合キーの作成（品名を軸とし、無ければメーカー+品名）
+                        merge_key = "品名" if "品名" in df_existing.columns and "品名" in df_new.columns else None
 
-                    # Excelダウンロード機能
+                        if merge_key:
+                            # インデックスを照合キーに設定して上書き更新（update）
+                            df_existing_indexed = df_existing.set_index(merge_key)
+                            df_new_indexed = df_new.set_index(merge_key)
+
+                            # 既存にない列（新しい月の単価列など）を既存DFに追加拡張
+                            for col in df_new_indexed.columns:
+                                if col not in df_existing_indexed.columns:
+                                    df_existing_indexed[col] = None
+
+                            # 既存データに対し、新しいPDFのデータで上書き（同一品名が存在する場合）
+                            df_existing_indexed.update(df_new_indexed)
+
+                            # 完全に新しい品名（行）を末尾に追加
+                            new_rows = df_new_indexed.index.difference(df_existing_indexed.index)
+                            if not new_rows.empty:
+                                df_updated = pd.concat([df_existing_indexed, df_new_indexed.loc[new_rows]]).reset_index()
+                            else:
+                                df_updated = df_existing_indexed.reset_index()
+
+                        else:
+                            # キーが見つからない場合は単純結合
+                            df_updated = pd.concat([df_existing, df_new], ignore_index=True)
+                    else:
+                        # 既存エクセルがない場合はPDFからの新規生成データを使用
+                        df_updated = df_new
+
+                    # 8. 画面表示とExcel出力
+                    st.success("データの照合・上書き・追加が完了しました。")
+                    st.dataframe(df_updated)
+
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        df.to_excel(writer, index=False, sheet_name="単価推移比較表")
+                        df_updated.to_excel(writer, index=False, sheet_name="単価推移比較表")
 
                     st.download_button(
-                        label="単価推移表（Excel）をダウンロード",
+                        label="更新後の単価推移表（Excel）をダウンロード",
                         data=output.getvalue(),
-                        file_name="月別品目単価推移表.xlsx",
+                        file_name="更新版_月別品目単価推移表.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
                 except Exception as e:
-                    st.error(f"Vertex AI 処理中にエラーが発生しました: {e}")
+                    st.error(f"データ処理中にエラーが発生しました: {e}")

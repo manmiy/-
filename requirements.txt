@@ -1,3 +1,5 @@
 streamlit
-google-cloud-documentai
+google-genai
+google-auth
+pandas
 openpyxl

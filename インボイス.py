@@ -67,7 +67,7 @@ if check_password():
                             existing_items = df_existing["品名"].dropna().unique().tolist()
                             existing_items_str = f"\nなお、既存の単価表には以下の品名が存在します。表記ゆれがある場合は極力これらの既存品名に合わせて統一（名寄せ）してください:\n{json.dumps(existing_items, ensure_ascii=False)}"
 
-                    # 2. Vertex AI クライアント初期化 (global リージョン設定)
+                    # 2. Vertex AI クライアント初期化 (location を "global" に明示的に固定)
                     creds_dict = dict(st.secrets["gcp_service_account"])
                     credentials = service_account.Credentials.from_service_account_info(
                         creds_dict,
@@ -77,7 +77,7 @@ if check_password():
                     client = genai.Client(
                         vertexai=True,
                         project=creds_dict.get("project_id"),
-                        location=st.secrets.get("GCP_LOCATION", "global"),
+                        location="global",  # Secretsの設定に惑わされないよう "global" に固定
                         credentials=credentials
                     )
 

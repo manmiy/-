@@ -91,18 +91,18 @@ if check_password():
                             )
                         )
 
-                    # 4. 解析指示プロンプトの構築
+                    # 4. 解析指示プロンプトの構築（備考列を除外、月名を1月〜12月に限定）
                     prompt = f"""
                     提供されたすべての請求書PDFを解析し、品目ごとの単価情報を抽出してください。
                     {existing_items_str}
 
                     【抽出・名寄せ条件】
                     1. メーカー名、品名、サイズ・規格を抽出してください。
-                    2. 各月（例: 4月単価、5月単価、6月単価、7月単価等）の単価を数値のみで抽出してください。単価がない月は null としてください。
-                    3. 備考情報（値上げなど）があれば抽出してください。
+                    2. 各月（1月単価、2月単価、... 12月単価）の単価を数値のみで抽出してください。単価がない月は null としてください。
+                    3. 備考情報は抽出・出力しないでください。
 
                     【返却フォーマット】
-                    以下の構造を持つ JSON 配列オブジェクトのみを出力してください。数値項目に空文字 "" を入れないでください。
+                    以下の構造を持つ JSON 配列オブジェクトのみを出力してください。数値項目に空文字 "" や「備考」を含めないでください。
                     [
                       {{
                         "メーカー": "吉野石膏",
@@ -111,8 +111,7 @@ if check_password():
                         "4月単価": 850,
                         "5月単価": 850,
                         "6月単価": 850,
-                        "7月単価": 980,
-                        "備考": "7月に値上げ"
+                        "7月単価": 980
                       }}
                     ]
                     """
@@ -126,11 +125,11 @@ if check_password():
                         )
                     )
 
-                    # 6. PDF解析結果のデータフレーム化
+                    # 6. PDF解析結果のデータフレーム化とクレンジング
                     new_data = json.loads(response.text)
                     df_new = pd.DataFrame(new_data)
 
-                    # ★ 型エラー対策：単価列などの空文字・不要文字を安全に数値型（またはNaN）へクレンジング
+                    # 数値列のデータ型クレンジング
                     for col in df_new.columns:
                         if "単価" in col or "金額" in col:
                             df_new[col] = pd.to_numeric(df_new[col].astype(str).str.replace(r"[^\d.-]", "", regex=True), errors="coerce")
@@ -168,7 +167,22 @@ if check_password():
                     else:
                         df_updated = df_new
 
-                    # 8. 画面表示とExcel出力（列幅自動調整）
+                    # 8. 備考列の削除 ＆ 1月〜12月の並び替え整形
+                    if "備考" in df_updated.columns:
+                        df_updated = df_updated.drop(columns=["備考"])
+
+                    base_cols = ["メーカー", "品名", "サイズ"]
+                    month_cols = [f"{m}月単価" for m in range(1, 13)]
+                    
+                    # 存在する基本列 ＋ 1月〜12月順の存在する単価列の順に配置
+                    ordered_cols = [c for c in base_cols if c in df_updated.columns] + \
+                                   [c for c in month_cols if c in df_updated.columns]
+                    
+                    # その他もし予期せぬ列があれば末尾に配置
+                    remaining_cols = [c for c in df_updated.columns if c not in ordered_cols]
+                    df_updated = df_updated[ordered_cols + remaining_cols]
+
+                    # 9. 画面表示とExcel出力（列幅自動調整）
                     st.success("データの照合・上書き・追加が完了しました。")
                     st.dataframe(df_updated)
 

@@ -67,7 +67,7 @@ if check_password():
                             existing_items = df_existing["品名"].dropna().unique().tolist()
                             existing_items_str = f"\nなお、既存の単価表には以下の品名が存在します。表記ゆれがある場合は極力これらの既存品名に合わせて統一（名寄せ）してください:\n{json.dumps(existing_items, ensure_ascii=False)}"
 
-                    # 2. Vertex AI クライアント初期化
+                    # 2. Vertex AI クライアント初期化 (global リージョン設定)
                     creds_dict = dict(st.secrets["gcp_service_account"])
                     credentials = service_account.Credentials.from_service_account_info(
                         creds_dict,
@@ -77,7 +77,7 @@ if check_password():
                     client = genai.Client(
                         vertexai=True,
                         project=creds_dict.get("project_id"),
-                        location=st.secrets.get("GCP_LOCATION", "us-central1"),
+                        location=st.secrets.get("GCP_LOCATION", "global"),
                         credentials=credentials
                     )
 
@@ -91,7 +91,7 @@ if check_password():
                             )
                         )
 
-                    # 4. 解析指示プロンプトの構築（備考列を除外、月名を指定）
+                    # 4. 解析指示プロンプトの構築
                     prompt = f"""
                     提供されたすべての請求書PDFを解析し、品目ごとの単価情報を抽出してください。
                     {existing_items_str}
@@ -116,9 +116,9 @@ if check_password():
                     ]
                     """
 
-                    # 5. Gemini 呼び出し
+                    # 5. Gemini 呼び出し (3.5-flash-lite モデル)
                     response = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.5-flash-lite",
                         contents=[*pdf_parts, prompt],
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json"
@@ -174,11 +174,9 @@ if check_password():
                     base_cols = ["メーカー", "品名", "サイズ"]
                     month_cols = [f"{m}月単価" for m in range(12, 0, -1)]  # 12月〜1月の逆順
                     
-                    # 存在する基本列 ＋ 12月〜1月順の存在する単価列の順に配置
                     ordered_cols = [c for c in base_cols if c in df_updated.columns] + \
                                    [c for c in month_cols if c in df_updated.columns]
                     
-                    # その他もし予期せぬ列があれば末尾に配置
                     remaining_cols = [c for c in df_updated.columns if c not in ordered_cols]
                     df_updated = df_updated[ordered_cols + remaining_cols]
 

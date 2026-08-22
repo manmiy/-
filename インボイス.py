@@ -98,11 +98,11 @@ if check_password():
 
                     【抽出・名寄せ条件】
                     1. メーカー名、品名、サイズ・規格を抽出してください。
-                    2. 各月（例: 4月単価、5月単価、6月単価、7月単価等）の単価を抽出してください。
+                    2. 各月（例: 4月単価、5月単価、6月単価、7月単価等）の単価を数値のみで抽出してください。単価がない月は null としてください。
                     3. 備考情報（値上げなど）があれば抽出してください。
 
                     【返却フォーマット】
-                    以下の構造を持つ JSON 配列オブジェクトのみを出力してください。
+                    以下の構造を持つ JSON 配列オブジェクトのみを出力してください。数値項目に空文字 "" を入れないでください。
                     [
                       {{
                         "メーカー": "吉野石膏",
@@ -129,6 +129,16 @@ if check_password():
                     # 6. PDF解析結果のデータフレーム化
                     new_data = json.loads(response.text)
                     df_new = pd.DataFrame(new_data)
+
+                    # ★ 型エラー対策：単価列などの空文字・不要文字を安全に数値型（またはNaN）へクレンジング
+                    for col in df_new.columns:
+                        if "単価" in col or "金額" in col:
+                            df_new[col] = pd.to_numeric(df_new[col].astype(str).str.replace(r"[^\d.-]", "", regex=True), errors="coerce")
+
+                    if not df_existing.empty:
+                        for col in df_existing.columns:
+                            if "単価" in col or "金額" in col:
+                                df_existing[col] = pd.to_numeric(df_existing[col].astype(str).str.replace(r"[^\d.-]", "", regex=True), errors="coerce")
 
                     # 7. 既存エクセルとの照合・重複排除・上書き・追加ロジック
                     if not df_existing.empty:
@@ -167,19 +177,16 @@ if check_password():
                         sheet_name = "単価推移比較表"
                         df_updated.to_excel(writer, index=False, sheet_name=sheet_name)
 
-                        # openpyxlのワークシートを取得して自動列幅設定
                         worksheet = writer.sheets[sheet_name]
                         for col in worksheet.columns:
                             max_length = 0
-                            column_letter = col[0].column_letter  # 列識別子 (A, B, C...)
+                            column_letter = col[0].column_letter
                             for cell in col:
                                 if cell.value is not None:
                                     val_str = str(cell.value)
-                                    # 日本語（全角文字）は幅2、英数字（半角文字）は幅1として文字数を計算
                                     length = sum(2 if ord(c) > 127 else 1 for c in val_str)
                                     if length > max_length:
                                         max_length = length
-                            # 最小幅10、文字数+3の余白を設けて設定
                             worksheet.column_dimensions[column_letter].width = max(max_length + 3, 10)
 
                     st.download_button(

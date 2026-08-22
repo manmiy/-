@@ -135,23 +135,18 @@ if check_password():
                         merge_key = "品名" if "品名" in df_existing.columns and "品名" in df_new.columns else None
 
                         if merge_key:
-                            # PDF側・既存エクセル側の重複キーをそれぞれ排除（最後に出現したデータを優先）
                             df_new_clean = df_new.drop_duplicates(subset=[merge_key], keep="last")
                             df_existing_clean = df_existing.drop_duplicates(subset=[merge_key], keep="last")
 
-                            # インデックス設定
                             df_existing_indexed = df_existing_clean.set_index(merge_key)
                             df_new_indexed = df_new_clean.set_index(merge_key)
 
-                            # 既存にない列（新しい月の単価列など）を拡張
                             for col in df_new_indexed.columns:
                                 if col not in df_existing_indexed.columns:
                                     df_existing_indexed[col] = None
 
-                            # 上書き更新
                             df_existing_indexed.update(df_new_indexed)
 
-                            # 新規品名（行）を末尾に追加
                             new_rows = df_new_indexed.index.difference(df_existing_indexed.index)
                             if not new_rows.empty:
                                 df_updated = pd.concat([df_existing_indexed, df_new_indexed.loc[new_rows]]).reset_index()
@@ -163,13 +158,29 @@ if check_password():
                     else:
                         df_updated = df_new
 
-                    # 8. 画面表示とExcel出力
+                    # 8. 画面表示とExcel出力（列幅自動調整）
                     st.success("データの照合・上書き・追加が完了しました。")
                     st.dataframe(df_updated)
 
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        df_updated.to_excel(writer, index=False, sheet_name="単価推移比較表")
+                        sheet_name = "単価推移比較表"
+                        df_updated.to_excel(writer, index=False, sheet_name=sheet_name)
+
+                        # openpyxlのワークシートを取得して自動列幅設定
+                        worksheet = writer.sheets[sheet_name]
+                        for col in worksheet.columns:
+                            max_length = 0
+                            column_letter = col[0].column_letter  # 列識別子 (A, B, C...)
+                            for cell in col:
+                                if cell.value is not None:
+                                    val_str = str(cell.value)
+                                    # 日本語（全角文字）は幅2、英数字（半角文字）は幅1として文字数を計算
+                                    length = sum(2 if ord(c) > 127 else 1 for c in val_str)
+                                    if length > max_length:
+                                        max_length = length
+                            # 最小幅10、文字数+3の余白を設けて設定
+                            worksheet.column_dimensions[column_letter].width = max(max_length + 3, 10)
 
                     st.download_button(
                         label="更新後の単価推移表（Excel）をダウンロード",
